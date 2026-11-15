@@ -1,194 +1,169 @@
-# More than a Hack 2027 — Phase 1: Ball Possession
+# Barça Hackathon — Ball Possession Modelling
 
-**Organised by [Metrica Sports](https://metrica-sports.com), [FC Barcelona](https://www.fcbarcelona.com)
-and the [Mobile World Capital Barcelona](https://www.mwcbarcelona.com)**, at the Talent Arena in Barcelona.
+This repository contains our work on the **More than a Hack 2027** ball-possession challenge.
+The objective is to predict, for every video frame, whether the ball is controlled by the home
+team (`H`), the away team (`A`), is dead (`D`), or is outside the evaluated interval (`X`).
 
-A football data challenge on real professional match data, open to analysts, data scientists and
-engineers. You are given one complete LaLiga match — two camera feeds, automatic tracking of every
-player and the ball, automatic tactical tagging, and the camera-to-pitch geometry — and one
-question to answer with it.
+The repository now contains both the official challenge material and our reproducible research
+pipeline. The short version is: we built a frame-level feature store, tested ATD and Smart
+Tagging signals, evaluated visual ball-recovery heuristics, added unsupervised context features,
+and tested temporal decoders that produce coherent possession spells.
 
----
+## Current status
 
-## The task
+The work is exploratory and is evaluated on the public window only: **7,500 frames and 17
+possessions**. The public labels are used for benchmarking, not for frame-by-frame manual rules or
+supervised training. Results must therefore be validated on a larger independent split before
+selecting a final submission.
 
-**For every frame of the match, say who has the ball.**
+| Track | Current result | Status |
+|---|---:|---|
+| Official baseline, smooth 50 frames | `macroF1 0.621`, `spellF1 0.326` | Reference |
+| Score-based temporal model + Viterbi | `macroF1 0.597`, `spellF1 0.520` | Best public `spellF1`, exploratory |
+| Adaptive temporal smoothing | `macroF1 0.636`, `spellF1 0.409` | Best balanced candidate |
+| Unsupervised clustering | GMM-8 purity `75.4%` | Useful context, not a classifier |
 
-```
-frame,label
-11185,A        away in possession, ball alive
-11186,A
-...
-18240,D        dead ball
-...
-18684,H        home in possession, ball alive
-```
+The main conclusion so far is that **temporal regularisation matters more than adding isolated
+local features**. A long global window improves possession-spell recovery but can absorb real
+transitions. Adaptive smoothing is a better compromise between frame accuracy and spell quality.
 
-That is the whole task. One CSV, one row per video frame, 199,319 rows. It is scored automatically
-against a private frame-by-frame ground truth, so there is a number at the end and no argument
-about it — no jury, and no presentation to argue from.
+## Quick start
 
-The tracking is automatic and uncorrected: it has gaps and identity
-switches, and the ball itself is invisible on 41% of the frames you are scored on.
+Python 3.10–3.13 and [uv](https://docs.astral.sh/uv/) are recommended.
 
----
-
-## The challenge in one screen
-
-| |                                                                                                                           |
-|---|---------------------------------------------------------------------------------------------------------------------------|
-| **Input** | one full match: tactical video, broadcast video, automatic tracking **with the ball** for both, Smart Tagging, homography |
-| **Output** | `frame,label` CSV, 199,319 rows, labels `H` / `A` / `D` / `X`                                                             |
-| **Ranked on** | `spellF1` — how many of the match's real possessions you recovered as whole possessions                                   |
-| **Also reported** | `macroF1` — the per-frame view, and the first tie-break                                                                   |
-| **Baseline to beat** | `spellF1` **0.2433**, in this repository                                                                                  |
-| **Ground truth you get** | the first **5 minutes** of play                                                                                           |
-| **Ground truth you are scored on** | the full match, **private**                                                                                               |
-
-It is deliberately **not** a tracking challenge. The tracking, tagging and homography are given to
-you so that nobody has to rebuild detection, re-identification and camera calibration before
-getting to the actual question. See [CHALLENGE.md](CHALLENGE.md).
-
----
-
-## Try it right now
-
-The scorer, a 5-minute ground truth and four working baselines are in this repository. No
-enrolment, no download, no data:
-
-```bash
-pip install -r requirements.txt
-python evaluation/run_evaluation.py
+```powershell
+uv sync
 ```
 
-Scored on the public 5 minutes, not on the full match -- which is why the order below is not the
-order of the floor quoted above:
+The evaluator can run against the public ground truth and the checked-in baseline CSVs without
+the private match assets:
 
-```
-scoreboard  gt/BAR-ATH_possession_gt_public.csv  199319 frames  7500 graded  21 gt segments
-ground truth has 17 possessions of mean 14.2 s  <- compare the poss and dur columns
-
-rank  submission                macroF1  spellF1   poss     dur  
-----  ------------------------  -------  -------  -----  ------  
-   1  baseline_smooth125         0.5812   0.4242     16    18.5  
-   2  baseline_smooth50          0.6207   0.3256     26    10.8  
-   3  baseline_smooth25          0.6200   0.2868     36     7.6  
-   4  baseline_raw               0.5972   0.0378    131     2.0  
+```powershell
+uv run python evaluation/run_evaluation.py
 ```
 
-Those four are **the same algorithm four times** — nearest tracked player to the ball, then a
-majority vote over a window. Only the window changes. `macroF1` barely moves; `spellF1` moves by a
-factor of eleven. That disagreement is the whole point of the metric, and
-[EVALUATION.md](EVALUATION.md) explains it.
+Rebuilding the official baseline requires the downloaded ATD assets in `data/`:
 
-Once you have the data, regenerate them yourself and go further:
-
-```bash
-python starter/baseline.py                              # rebuild the four baselines
-python evaluation/validate_submission.py <your>.csv     # before every submission
+```powershell
+uv run python starter/baseline.py
 ```
 
-**Validate every file before you submit it.** `validate_submission.py` runs exactly the checks the
-official scorer runs, and a file that fails them is dropped from the board with a one-line reason.
-It takes two seconds and it is the single most common way a good entry scores nothing.
+For the research pipeline, install or unpack the challenge assets in `data/`. The expected
+formats and frame alignment are documented in [DATA.md](DATA.md). Then run the stages in order:
 
----
+```powershell
+# 1. Build frame-level features from ATD, Smart Tagging and homography data
+uv run python scripts/build_feature_store.py
 
-## Getting the data
+# 2. Discover unsupervised context regimes
+uv run python scripts/run_feature_clustering.py
+uv run python scripts/evaluate_cluster_quality.py
 
-The match assets are released to enrolled participants who have accepted the terms of use.
+# 3. Evaluate cluster-aware heuristics and temporal models
+uv run python scripts/run_cluster_heuristics.py
+uv run python scripts/run_temporal_control_model.py
+uv run python scripts/run_adaptive_temporal_model.py
 
-1. Enrol: **[More than A Hack 2027](https://landing.mobileworldcapital.com/more-than-a-hack-2027)**
-2. Read and sign the terms and conditions in the registration form
-3. You receive a download link.
-4. Unpack it into `./data`, or point `MTAH_DATA_DIR` at wherever you put it.
-
-Full description of every asset and how the frames line up: **[DATA.md](DATA.md)**.
-
----
-
-## Read these, in this order
-
-| | |
-|---|---|
-| **[CHALLENGE.md](CHALLENGE.md)** | the problem, the four labels, what counts as possession |
-| **[DATA.md](DATA.md)** | every provided asset, its format, and the frame alignment |
-| **[EVALUATION.md](EVALUATION.md)** | how you are scored, and why — read before optimising anything |
-| **[SUBMISSION.md](SUBMISSION.md)** | the file contract, the three deliverables, how to submit |
-| **[RULES.md](RULES.md)** | what you may and may not do |
-| **[FAQ.md](FAQ.md)** | |
-| **[OVERVIEW.md](OVERVIEW.md)** | the competition as a whole — context, why the 2027 format changed, the calendar |
-
-
----
-
-## What is in this repository
-
-```
-games.py                    per-match constants, asset paths and the frame alignment
-evaluation/
-  possession_metrics.py     the metric library — every number on the board is defined here
-  run_evaluation.py         the scorer. This exact file produces the official result
-  validate_submission.py    check a file before you send it
-  gt/                       the public 5-minute ground truth
-  results/                  the four baselines; put your submissions here
-starter/
-  baseline.py               the reference baseline, numpy only
-  load_atd.py               read the tracking and line it up with video frames
-  load_smart_tagging.py     read the tactical tagging as video-frame intervals
-  load_homography.py        read the homography; project pitch <-> pixels
-  utils.py                  pitch plotting for the notebooks
-  01_smart_tagging.ipynb    guided tour of the tactical tagging
-  02_tracking_atd.ipynb     guided tour of the tracking data, with plots
-  03_first_submission.ipynb data in, scored submission out — start here
-data/                       unpack the downloaded match assets here. Empty in a fresh clone
+# 4. Validate any candidate submission
+uv run python evaluation/validate_submission.py path/to/submission.csv
 ```
 
-The scorer you run locally is the scorer that decides the competition. If it scores on your
-machine, it scores the same way on ours.
+All experiment scripts are deterministic unless a sampling parameter is explicitly changed. They
+write metrics, configurations and candidate CSVs under `reports/`; generated feature files are
+written under `features/`.
 
----
+## What has been done
 
-## Requirements
+### 1. Data and alignment QA
 
-**Python 3.8 or newer.** The evaluation needs `numpy` and `pandas` and nothing else; it is tested
-under 3.8 and 3.11 and produces identical output under both. `starter/baseline.py` needs nothing
-more either — you can reach a scored submission without installing anything else.
+- Checked the tactical ATD timeline over 199,319 frames.
+- Checked Smart Tagging intervals and homography alignment.
+- Measured ball visibility, player gaps and tracking quality.
+- Kept public ground truth restricted to final scoring and diagnostics.
 
-The notebooks additionally want `kloppy` and `matplotlib` (`requirements-starter.txt`), and
-**Python 3.9+ is recommended for those**: on Windows, installing Jupyter under 3.8 hits a
-`pywinpty` build failure that has nothing to do with this repository.
+### 2. Feature store
 
----
+[`scripts/build_feature_store.py`](scripts/build_feature_store.py) creates one row per frame with
+54 features, including:
 
-## Timeline
+- nearest-player distances and estimated arrival times;
+- ball visibility, gaps, short interpolation, speed and acceleration;
+- team centroids, dispersion and nearby-player counts;
+- Smart Tagging, set-piece and transition indicators;
+- homography and tracking quality;
+- outputs from the bright-blob, template and optical-flow video experiments.
 
-| |                |
-|---|----------------|
-| registration opens | **October 1, 2026** |
-| data released | **October 20, 2026** |
-| submission deadline | **November 17, 2026** |
-| results announced | **Before November 26, 2026**      |
+### 3. Baselines and ablations
 
----
+[`scripts/run_atd_experiments.py`](scripts/run_atd_experiments.py) compares the official baseline
+with distance, collective, Smart Tagging, control-time, interpolation, stateful and video-based
+variants. The experiments show that most local additions do not improve the headline metric after
+temporal smoothing.
 
-## Questions
+### 4. Unsupervised context
 
-Open an issue for anything about the data, the metrics or the documentation — corrections are
-genuinely useful, and a fix that helps you helps everyone equally. For enrolment and the terms of
-use: **hackathon.talentarena@mobileworldcapital.com**.
+[`scripts/run_feature_clustering.py`](scripts/run_feature_clustering.py) applies standardisation,
+PCA, MiniBatch KMeans and diagonal GMMs. The clusters mostly describe visibility and tracking
+regimes. They are useful for confidence and quality gating, but they do not provide a stable
+home/away possession identity.
 
-## Licence and citation
+### 5. Temporal decoding
 
-The code and documentation in this repository are released under the MIT Licence — see
-[LICENSE](LICENSE). **The match data is not covered by it**: it is separately licensed for this
-competition only, under the terms you accept at enrolment.
+[`scripts/run_temporal_control_model.py`](scripts/run_temporal_control_model.py) builds continuous
+`H/A/D` emissions and decodes them with Viterbi, including switch penalties and minimum alive
+durations. [`scripts/run_adaptive_temporal_model.py`](scripts/run_adaptive_temporal_model.py)
+changes the smoothing window near boundaries and uncertain frames.
 
-```bibtex
-@misc{mtah2027,
-  title  = {More than a Hack 2027: Phase 1 - Ball Possession},
-  author = {Metrica Sports and FC Barcelona Innovation Hub},
-  year   = {2027},
-  url    = {https://github.com/metrica-sports/more-than-a-hack-2027}
-}
+### 6. Visual experiments
+
+The tactical video experiments test motion, bright-ball detection, template matching and optical
+flow. They can recover useful ball candidates, but their current spatial error is not yet low or
+stable enough to replace the ATD baseline. Broadcast video and audio have not yet been integrated.
+
+## Repository map
+
+```text
+README.md                         project overview and reproducible commands
+docs/
+  README.md                       documentation index
+  ARCHITECTURE.md                 data flow and responsibilities
+  ROADMAP.md                      next work, priorities and acceptance criteria
+  experiments/                    protocols and experiment reports
+  strategy/                       longer modelling plan
+evaluation/                       official scorer, validator and public labels
+starter/                          official loaders, baseline and notebooks
+scripts/                          research and experiment entry points
+features/                         generated frame-level feature store
+reports/                          generated metrics, submissions and summaries
+data/                             local challenge assets (not committed)
 ```
+
+Start with [docs/README.md](docs/README.md) if you are joining the project. Read
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) to understand how the pipeline connects, then
+[docs/ROADMAP.md](docs/ROADMAP.md) for the next tasks.
+
+## Official challenge documentation
+
+The following files describe the challenge contract and remain the source of truth for data,
+metrics and submission rules:
+
+- [CHALLENGE.md](CHALLENGE.md) — task and label definitions;
+- [DATA.md](DATA.md) — assets and frame alignment;
+- [EVALUATION.md](EVALUATION.md) — metrics and scoring;
+- [SUBMISSION.md](SUBMISSION.md) — output contract and validation;
+- [RULES.md](RULES.md) — competition rules;
+- [FAQ.md](FAQ.md) — common questions.
+
+## Reproducibility and data policy
+
+The private match data and derived full-match predictions must not be committed. The `.gitignore`
+keeps local environments, private assets and generated submission files out of Git. Every report
+should record the command, input data assumptions, public-window usage and output configuration.
+
+Do not tune a final model on the 17 public possessions alone. Use them to catch pipeline errors,
+then confirm decisions with an independent validation protocol before submission.
+
+## Licence
+
+Code and documentation follow the repository licence in [LICENSE](LICENSE). Match assets are
+subject to the challenge terms and are not redistributed by this repository.

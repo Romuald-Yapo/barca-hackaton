@@ -70,3 +70,8 @@ __pycache__/
 venv/
 env/
 .DS_Store
+
+# -- experiments/ (exp09, exp10) -----------------------------------------------------------------
+# Frame-level derived tracking, video crops and full-match labels: never committed (RULES.md).
+experiments/cache/
+experiments/out/
